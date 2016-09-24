@@ -20,6 +20,7 @@ using System.Threading;
 using System.Threading.Tasks;
 #pragma warning disable
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Data;
 using System.Data.Common;
@@ -190,6 +191,8 @@ using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using JetBrains.Annotations;
 using System.Threading;
 using System.Threading.Tasks;
@@ -264,37 +267,6 @@ namespace Npgsql
             {
                 State = CommandState.Idle;
                 throw;
-            }
-        }
-
-        async Task SendAsync(PopulateMethod populateMethod, CancellationToken cancellationToken)
-        {
-            while (true)
-            {
-                var directBuf = new DirectBuffer();
-                var completed = populateMethod(ref directBuf);
-                await _connector.SendBufferAsync(cancellationToken).ConfigureAwait(false);
-                if (completed)
-                    break; // Sent all messages
-                // The following is an optimization hack for writing large byte arrays without passing
-                // through our buffer
-                if (directBuf.Buffer != null)
-                {
-                    await _connector.WriteBuffer.DirectWriteAsync(directBuf.Buffer, directBuf.Offset, directBuf.Size == 0 ? directBuf.Buffer.Length : directBuf.Size, cancellationToken).ConfigureAwait(false);
-                    directBuf.Buffer = null;
-                    directBuf.Size = 0;
-                }
-
-                if (_writeStatementIndex > 0)
-                {
-                    // We've send all the messages for the first statement in a multistatement command.
-                    // If we continue blocking writes for the rest of the messages, we risk a deadlock where
-                    // PostgreSQL sends large results for the first statement, while we're sending large
-                    // parameter data for the second. To avoid this, switch to async sends.
-                    // See #641
-                    RemainingSendTask = SendRemaining(populateMethod, CancellationToken.None);
-                    return;
-                }
             }
         }
 

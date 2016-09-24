@@ -632,7 +632,6 @@ namespace Npgsql
 
         delegate bool PopulateMethod(ref DirectBuffer directBuf);
 
-        [RewriteAsync]
         void Send(PopulateMethod populateMethod)
         {
             while (true)
@@ -677,6 +676,39 @@ namespace Npgsql
                         SynchronizationContext.SetSynchronizationContext(callerSyncContext);
                     }
 
+                    return;
+                }
+            }
+        }
+
+        async Task SendAsync(PopulateMethod populateMethod, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                var directBuf = new DirectBuffer();
+                var completed = populateMethod(ref directBuf);
+                await _connector.SendBufferAsync(cancellationToken).ConfigureAwait(false);
+                if (completed)
+                    break;  // Sent all messages
+
+                // The following is an optimization hack for writing large byte arrays without passing
+                // through our buffer
+                if (directBuf.Buffer != null)
+                {
+                    _connector.WriteBuffer.DirectWrite(directBuf.Buffer, directBuf.Offset, directBuf.Size == 0 ? directBuf.Buffer.Length : directBuf.Size);
+                    directBuf.Buffer = null;
+                    directBuf.Size = 0;
+                }
+
+                if (_writeStatementIndex > 0)
+                {
+                    // We've send all the messages for the first statement in a multistatement command.
+                    // If we continue awaiting on writes for the rest of the messages, we risk a deadlock where
+                    // PostgreSQL sends large results for the first statement, while we're sending large
+                    // parameter data for the second. To avoid this, we don't await and transfer control
+                    // back to the user for reading. See #641
+
+                    RemainingSendTask = SendRemaining(populateMethod, CancellationToken.None);
                     return;
                 }
             }
